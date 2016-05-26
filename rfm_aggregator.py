@@ -4,12 +4,14 @@ import logging
 import os
 import math
 import csv
+import pandas as pd
+import numpy as np
 
 class ProcessTar:
     def __init__(self, input_file, output_dir, header):
         self.input_file = input_file
         self.output_dir = output_dir
-        self.header = header
+        self.header = header == 'Y'
 
         # aggregation tables
         self.user_id_agg = {}
@@ -32,27 +34,39 @@ class ProcessTar:
                     self.process_line(line)
                 data.close()
 
+        self.df_user_id_agg = pd.DataFrame(self.user_id_agg.values())
+        self.df_category_agg = pd.DataFrame(self.category_agg.values())
+        self.df_geo_agg = pd.DataFrame(self.geo_agg.values())
+        self.df_geo_category_agg = pd.DataFrame(self.geo_category_agg.values())
+
     def save(self):
         outputs = [
-            ['user_id_agg.tsv', self.user_id_agg, ['user_id', 'clicks_total', 'price_total', 'last_ts', 'last_geo']],
-            ['category_agg.tsv', self.category_agg, ['category', 'clicks_total', 'price_total']],
-            ['geo_agg.tsv', self.geo_agg, ['geo', 'clicks_total', 'price_total']],
-            ['geo_category_agg.tsv', self.geo_category_agg, ['geo', 'category', 'clicks_total', 'price_total']]
+            ['user_id_agg.tsv', self.df_user_id_agg,
+                ['user_id', 'clicks_total', 'price_total', 'last_ts', 'last_geo'],
+                [('rfm_last_ts', 'last_ts'), ('rfm_clicks_total', 'clicks_total'), ('rfm_price_total', 'price_total')]],
+            ['category_agg.tsv', self.df_category_agg,
+                ['category', 'clicks_total', 'price_total'],
+                [('rfm_clicks_total', 'clicks_total'), ('rfm_price_total', 'price_total')]],
+            ['geo_agg.tsv', self.df_geo_agg,
+                ['geo', 'clicks_total', 'price_total'],
+                [('rfm_clicks_total', 'clicks_total'), ('rfm_price_total', 'price_total')]],
+            ['geo_category_agg.tsv', self.df_geo_category_agg,
+                ['geo', 'category', 'clicks_total', 'price_total'],
+                [('rfm_clicks_total', 'clicks_total'), ('rfm_price_total', 'price_total')]]
         ]
 
         for output in outputs:
             filename = os.path.join(self.output_dir, output[0])
-            self.save_file(filename, output[1], output[2])
+            for fields_pair in output[3]:
+                df = output[1]
+                new_field = fields_pair[0]
+                rfm_field = fields_pair[1]
+                rank_series = df[rfm_field].rank()
+                max_rank = rank_series.max()
+                df[new_field] = np.ceil(5*rank_series/max_rank).astype(int)
+                output[2].append(new_field)
 
-    def save_file(self, filename, dict_agg, headline):
-        with open(filename, 'w') as f:
-            out_writer = csv.writer(f, delimiter='\t')
-            try:
-                if self.header == 'Y':
-                    out_writer.writerow(headline)
-                out_writer.writerows(dict_agg.values())
-            except csv.Error as e:
-                logging.error('file {}, line {}: {}'.format(filename, out_writer.line_num, e))
+            output[1].to_csv(filename, sep='\t', header=self.header, index=False, columns=output[2])
 
     def process_line(self, line):
         try:
@@ -65,30 +79,30 @@ class ProcessTar:
                 price = int(fields[5])
 
                 # user_id aggregaton
-                user_id_info = self.user_id_agg.get(user_id, [user_id, 0, 0, None, None])
-                user_id_info[1] += 1
-                user_id_info[2] += price
-                if log_ts > user_id_info[3]:
-                    user_id_info[3] = log_ts
-                    user_id_info[4] = geo_id
-                self.user_id_agg[user_id] = user_id_info
+                info = self.user_id_agg.get(user_id, {'user_id': user_id, 'clicks_total': 0, 'price_total': 0, 'last_ts': None, 'last_geo': None})
+                info['clicks_total'] += 1
+                info['price_total'] += price
+                if log_ts > info['last_ts']:
+                    info['last_ts'] = log_ts
+                    info['last_geo'] = geo_id
+                self.user_id_agg[user_id] = info
 
                 # category aggregation
-                info = self.category_agg.get(category, [category, 0, 0])
-                info[1] += 1
-                info[2] += price
+                info = self.category_agg.get(category, {'category': category, 'clicks_total': 0, 'price_total': 0})
+                info['clicks_total'] += 1
+                info['price_total'] += price
                 self.category_agg[category] = info
 
                 # geo aggregation
-                info = self.geo_agg.get(geo_id, [geo_id, 0, 0])
-                info[1] += 1
-                info[2] += price
+                info = self.geo_agg.get(geo_id, {'geo': geo_id, 'clicks_total': 0, 'price_total': 0})
+                info['clicks_total'] += 1
+                info['price_total'] += price
                 self.geo_agg[geo_id] = info
 
                 # geo category aggregation
-                info = self.geo_category_agg.get((geo_id, category), [geo_id, category, 0, 0])
-                info[2] += 1
-                info[3] += price
+                info = self.geo_category_agg.get((geo_id, category), {'geo': geo_id, 'category': category, 'clicks_total': 0, 'price_total': 0})
+                info['clicks_total'] += 1
+                info['price_total'] += price
                 self.geo_category_agg[(geo_id, category)] = info
 
         except IndexError as e:
