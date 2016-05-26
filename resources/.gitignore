@@ -1,0 +1,4 @@
+*.tar.gz
+*.tsv
+!rfm_test.tar.gz
+!rfm_test2.tar.gz
